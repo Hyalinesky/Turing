@@ -1,0 +1,13 @@
+flask
+flask-cors
+transformers
+torch>=2.6.0
+jieba
+openai
+tqdm
+sentence-transformers==5.1.0
+numpy
+scikit-learn
+beautifulsoup4
+requests
+accelerate
