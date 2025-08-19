@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from bs4 import BeautifulSoup
 
 # 百度地图 API Key
 AK = "gehmkw7PwZ0TCcHIqHsqa2IoAwWDQKbI"
@@ -287,13 +288,153 @@ class TravelAssistant:
         hybrid_scores.sort(key=lambda x: x[1], reverse=True)
         return [doc for doc, score in hybrid_scores[:top_k]]
 
+    def get_baidu_search_results(self, query: str, top_k: int = 2) -> List[str]:
+        """从百度搜索API获取结果并爬取完整内容"""
+        try:
+            url = "https://www.searchapi.io/api/v1/search"
+            params = {
+                "engine": "baidu",
+                "q": query,
+                "api_key": "T6wx6DDW7yEMDbwZ6EagTNdC"
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            results = []
+            
+            # 提取前top_k条organic_results
+            organic_results = data.get("organic_results", [])
+            for i, result in enumerate(organic_results[:top_k]):
+                title = result.get("title", "")
+                link = result.get("link", "")
+                
+                # 爬取链接内容
+                content = self._crawl_page_content(link)
+                
+                # 如果爬取失败，使用原始snippet作为备选
+                if not content:
+                    content = result.get("snippet", "")
+                
+                formatted_result = f"标题：{title} 内容：{content}"
+                results.append(formatted_result)
+                
+                # 添加延时避免请求过快
+                time.sleep(1)
+            
+            print(f"[百度搜索] 获取到 {len(results)} 条搜索结果")
+            return results
+            
+        except Exception as e:
+            print(f"[百度搜索] 调用出错: {e}")
+            return []
+
+    def _crawl_page_content(self, url: str, max_length: int = 1000) -> str:
+        """爬取网页内容"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            response.encoding = response.apparent_encoding
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 移除脚本和样式元素
+            for script in soup(["script", "style", "nav", "header", "footer"]):
+                script.decompose()
+            
+            # 优先提取主要内容区域
+            content_selectors = [
+                'article', 'main', '.content', '.main-content', 
+                '.post-content', '.entry-content', '.article-content',
+                'div[class*="content"]', 'div[class*="article"]'
+            ]
+            
+            content_text = ""
+            for selector in content_selectors:
+                content_elements = soup.select(selector)
+                if content_elements:
+                    content_text = content_elements[0].get_text(strip=True)
+                    break
+            
+            # 如果没有找到特定内容区域，提取body文本
+            if not content_text:
+                body = soup.find('body')
+                if body:
+                    content_text = body.get_text(strip=True)
+            
+            # 清理文本
+            content_text = self._clean_content_text(content_text)
+            
+            # 截取指定长度
+            if len(content_text) > max_length:
+                content_text = content_text[:max_length] + "..."
+            
+            return content_text
+            
+        except Exception as e:
+            print(f"[网页爬取] 爬取 {url} 失败: {e}")
+            return ""
+
+    def _clean_content_text(self, text: str) -> str:
+        """清理文本内容，移除无关信息"""
+        if not text:
+            return ""
+        
+        # 定义需要移除的无关内容模式
+        remove_patterns = [
+            r'百度首页.*?登录',
+            r'百度首页\s*登录',
+            r'登录\s*注册',
+            r'设为首页.*?京公网安备.*?号',
+            r'使用百度前必读.*?意见反馈',
+            r'京ICP证\d+号',
+            r'京公网安备\d+号',
+            r'© Baidu',
+            r'百度.*?使用百度前必读',
+            r'意见反馈.*?京ICP证',
+            r'自动播放\s*加载中,?请稍后',
+            r'关注\s*发表评论\s*发表',
+            r'相关推荐.*?自动播放',
+            r'还没有任何签名哦',
+            r'发布时间:\d+.*?前',
+            r'加载中,?请稍后\.{3}',
+            r'设为首页',
+            r'百度.*?搜索',
+            r'登录.*?注册',
+            r'首页.*?登录'
+        ]
+        
+        # 清理空白字符
+        text = ' '.join(text.split())
+        
+        # 移除匹配的模式
+        for pattern in remove_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        
+        # 移除多余的标点符号和空格
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'[\.]{3,}', '...', text)
+        text = re.sub(r'^\s*[\.。,，\-\s]+', '', text)
+        text = re.sub(r'[\.。,，\-\s]+\s*$', '', text)
+        
+        return text.strip()
+
     def retrieve_from_rag(self, query: str) -> List[str]:
         """改进的RAG检索"""
         all_docs = []
         files_to_search = []
         
         # 文件选择逻辑保持不变
-        if any(keyword in query for keyword in ["攻略", "去哪玩", "景点", "游玩"]):
+        if any(keyword in query for keyword in ["攻略", "去哪玩", "景点", "游玩", "摄影", "拍照", "机位"]):
             files_to_search.append("docs/xhs_rag.txt")
         
         if any(keyword in query for keyword in ["住在哪", "酒店", "宾馆", "民宿", "青旅", "住宿"]):
@@ -325,7 +466,7 @@ class TravelAssistant:
                 print(f"读取文件 {file_path} 出错: {e}")
         
         # 使用混合搜索
-        retrieved_docs = self.hybrid_search(query, all_docs, top_k=6)
+        retrieved_docs = self.hybrid_search(query, all_docs, top_k=4)
         
         # 调用Kimi API获取专家总结
         try:
@@ -346,6 +487,20 @@ class TravelAssistant:
         except Exception as e:
             print(f"[Kimi API] 调用出错: {e}")
         
+        # 调用百度搜索API获取结果
+        try:
+            baidu_results = self.get_baidu_search_results("北京的"+query, top_k=2)
+            if baidu_results:
+                # 在Kimi响应之后插入百度搜索结果
+                insert_position = 1 if len(retrieved_docs) > 6 else 0
+                for i, result in enumerate(baidu_results):
+                    retrieved_docs.insert(insert_position + i, result)
+                print(f"[百度搜索] 成功插入 {len(baidu_results)} 条搜索结果")
+            else:
+                print(f"[百度搜索] 未获取到搜索结果")
+        except Exception as e:
+            print(f"[百度搜索] 调用出错: {e}")
+        
         # 记录步骤
         self.results.append({
             "step": "rag_retrieval",
@@ -355,7 +510,12 @@ class TravelAssistant:
         
         print(f"[步骤2 - RAG检索]\n检索到 {len(retrieved_docs)} 个相关文档")
         for i, doc in enumerate(retrieved_docs):
-            doc_type = "[Kimi专家总结]" if i == 0 and len(retrieved_docs) > 6 else "[文档检索]"
+            if i == 0 and len([d for d in retrieved_docs if "[Kimi专家总结]" in str(d)]) > 0:
+                doc_type = "[Kimi专家总结]"
+            elif any("标题：" in doc and "内容：" in doc for result in baidu_results if result == doc):
+                doc_type = "[百度搜索]"
+            else:
+                doc_type = "[文档检索]"
             print(f"{i+1}. {doc_type} {doc[:100]}...")
         print()
         
@@ -443,6 +603,7 @@ class TravelAssistant:
             origin_address = "百度科技园"
         
         # 获取原点坐标
+        origin_address = "北京" + origin_address
         origin = self.geocode_address(origin_address)
         if "error" in origin:
             return {"error": f"地理编码失败: {origin}"}
@@ -534,6 +695,7 @@ class TravelAssistant:
     请直接返回json格式的输出 {{"origin": "", "destination": ""}}。"""
         
         response = self.llm_generate(prompt)
+        print(response)
         
         # 尝试解析JSON
         try:
@@ -553,6 +715,8 @@ class TravelAssistant:
             return {"error": "您好！请说明您的起始地点和目标地点"}
         
         # 获取坐标
+        origin = "北京" + origin
+        destination =  "北京" + destination
         origin_coords = self.geocode_address(origin)
         dest_coords = self.geocode_address(destination)
         
@@ -712,7 +876,7 @@ class TravelAssistant:
 # 主函数
 def main():  
     # 配置参数
-    USE_TEST_MODE = False  # 修改这个参数来切换模式：True=使用API，False=使用本地模型
+    USE_TEST_MODE = True  # 修改这个参数来切换模式：True=使用API，False=使用本地模型
     API_KEY = "sk-8uZDRBjjuuwpdArZWdCpo7EP2iKhXBHBnvS5x2ajUbWr8u6t"
     # API_MODEL = "gpt-4o"
     API_MODEL = "gpt-4.1-2025-04-14"
@@ -734,7 +898,7 @@ def main():
     
     # 测试不同类型的查询
     test_queries = [
-        "北京铜锅涮肉推荐",
+        "故宫摄影机位",
     # "北京有哪些必去的景点？",
     # "从首都机场到天安门最快的路线是什么？",
     # "北京最好的烤鸭店",
