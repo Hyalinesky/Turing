@@ -99,6 +99,121 @@
             word-wrap: break-word;
         }
 
+        /* 资源图标容器 */
+        .resource-icons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f9fafb;
+            border-radius: 10px;
+        }
+
+        .resource-icon {
+            cursor: pointer;
+            padding: 5px 10px;
+            border-radius: 8px;
+            background: white;
+            border: 1px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+
+        .resource-icon:hover {
+            background: #f3f4f6;
+            border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .resource-icon img {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* 弹出框样式 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            animation: fadeIn 0.3s;
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 20px;
+            border-radius: 15px;
+            width: 80%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            position: relative;
+            animation: slideIn 0.3s;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 20px;
+        }
+
+        .close:hover,
+        .close:focus {
+            color: #667eea;
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f3f4f6;
+        }
+
+        .modal-header img {
+            width: 30px;
+            height: 30px;
+        }
+
+        .modal-body {
+            line-height: 1.6;
+            color: #333;
+        }
+
+        .modal-body pre {
+            background: #f3f4f6;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
         .bot-message .bubble h1, 
         .bot-message .bubble h2, 
         .bot-message .bubble h3 {
@@ -259,10 +374,39 @@
         </div>
     </div>
 
+    <!-- Modal -->
+    <div id="resourceModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <div class="modal-header" id="modalHeader"></div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
     <script>
         const chatContainer = document.getElementById('chatContainer');
         const queryInput = document.getElementById('queryInput');
         const sendBtn = document.getElementById('sendBtn');
+        const modal = document.getElementById('resourceModal');
+        const modalHeader = document.getElementById('modalHeader');
+        const modalBody = document.getElementById('modalBody');
+
+        // 图标映射
+        const iconMap = {
+            'baidu': 'https://www.baidu.com/favicon.ico',
+            'xhs': 'https://s1.aigei.com/src/img/png/ac/acf1db67ec814ae0840d0a5a94dcd1d8.png?imageMogr2/auto-orient/thumbnail/!282x282r/gravity/Center/crop/282x282/quality/85/%7CimageView2/2/w/282&e=2051020800&token=P7S2Xpzfz11vAkASLTkfHN7Fw-oOZBecqeJaxypL:dEv1-PWwS4ddXA0thwN7fLqxvWI=',
+            'dianping': 'https://play-lh.googleusercontent.com/dIqb1UE5hB90PyJj4nVWahcUz6X7LEb4whV0GBvsCIAiPjU9WfPzqLYBcerkN7emUw=w480-h960-rw',
+            'kimi': 'https://s1.chu0.com/src/img/png/d2/d2aa6760531240389f7d932a4b4ba854.png?imageMogr2/auto-orient/thumbnail/!282x282r/gravity/Center/crop/282x282/quality/85/%7CimageView2/2/w/282&e=2051020800&token=1srnZGLKZ0Aqlz6dk7yF4SkiYf4eP-YrEOdM1sob:uLhcaHt45hHAHKSpzRuEDB1FBDo=',
+            'map': 'https://s1.aigei.com/src/img/png/a7/a7c917edc88643a2817917b6d338dc27.png?imageMogr2/auto-orient/thumbnail/!282x282r/gravity/Center/crop/282x282/quality/85/%7CimageView2/2/w/282&e=2051020800&token=P7S2Xpzfz11vAkASLTkfHN7Fw-oOZBecqeJaxypL:eBgLptCd3PEvpzHcjse-6zXOikA='
+        };
+
+        const sourceNames = {
+            'baidu': '百度搜索',
+            'xhs': '小红书',
+            'dianping': '大众点评',
+            'kimi': '其它文档',
+            'map': '地图信息'
+        };
 
         function handleKeyPress(event) {
             if (event.key === 'Enter' && !sendBtn.disabled) {
@@ -270,22 +414,169 @@
             }
         }
 
-        function addMessage(content, isUser) {
+        function addMessage(content, isUser, resources = null) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
             
-            const bubbleDiv = document.createElement('div');
-            bubbleDiv.className = 'bubble';
-            
             if (isUser) {
+                const bubbleDiv = document.createElement('div');
+                bubbleDiv.className = 'bubble';
                 bubbleDiv.textContent = content;
+                messageDiv.appendChild(bubbleDiv);
             } else {
+                // 如果有资源，先添加资源图标
+                if (resources && (resources.ragDocs.length > 0 || resources.mapInfo)) {
+                    const resourceContainer = document.createElement('div');
+                    resourceContainer.className = 'resource-icons';
+                    
+                    // 添加RAG文档图标（将kimi放到最后）
+                    const nonKimiDocs = [];
+                    const kimiDocs = [];
+                    
+                    resources.ragDocs.forEach((doc, index) => {
+                        const source = resources.ragSources[index] || 'other';
+                        if (source === 'kimi') {
+                            kimiDocs.push({ doc, index, source });
+                        } else {
+                            nonKimiDocs.push({ doc, index, source });
+                        }
+                    });
+                    
+                    // 先添加非kimi文档
+                    nonKimiDocs.forEach(({ doc, index, source }) => {
+                        if (source !== 'other') {
+                            const icon = createResourceIcon(doc, source, index);
+                            resourceContainer.appendChild(icon);
+                        }
+                    });
+                    
+                    // 添加地图信息图标
+                    if (resources.mapInfo) {
+                        const mapIcon = createMapIcon(resources.mapInfo);
+                        resourceContainer.appendChild(mapIcon);
+                    }
+                    
+                    // 最后添加kimi文档
+                    kimiDocs.forEach(({ doc, index, source }) => {
+                        const icon = createResourceIcon(doc, source, index);
+                        resourceContainer.appendChild(icon);
+                    });
+                    
+                    messageDiv.appendChild(resourceContainer);
+                }
+                
+                const bubbleDiv = document.createElement('div');
+                bubbleDiv.className = 'bubble';
                 bubbleDiv.innerHTML = marked.parse(content);
+                messageDiv.appendChild(bubbleDiv);
             }
             
-            messageDiv.appendChild(bubbleDiv);
             chatContainer.appendChild(messageDiv);
             chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function createResourceIcon(doc, source, index) {
+            const iconDiv = document.createElement('div');
+            iconDiv.className = 'resource-icon';
+            iconDiv.onclick = () => showResourceModal(doc, source);
+            
+            const img = document.createElement('img');
+            img.src = iconMap[source] || iconMap['kimi'];
+            img.alt = sourceNames[source] || '文档';
+            
+            const text = document.createElement('span');
+            text.textContent = doc.substring(0, 20) + '...';
+            
+            iconDiv.appendChild(img);
+            iconDiv.appendChild(text);
+            
+            return iconDiv;
+        }
+
+        function createMapIcon(mapInfo) {
+            const iconDiv = document.createElement('div');
+            iconDiv.className = 'resource-icon';
+            iconDiv.onclick = () => showMapModal(mapInfo);
+            
+            const img = document.createElement('img');
+            img.src = iconMap['map'];
+            img.alt = '地图信息';
+            
+            const text = document.createElement('span');
+            text.textContent = '地图信息';
+            
+            iconDiv.appendChild(img);
+            iconDiv.appendChild(text);
+            
+            return iconDiv;
+        }
+
+        function showResourceModal(content, source) {
+            modalHeader.innerHTML = `
+                <img src="${iconMap[source] || iconMap['kimi']}" alt="${sourceNames[source]}">
+                <h3>${sourceNames[source] || '文档'}</h3>
+            `;
+            
+            modalBody.innerHTML = `<pre>${escapeHtml(content)}</pre>`;
+            modal.style.display = 'block';
+        }
+
+        function showMapModal(mapInfo) {
+            modalHeader.innerHTML = `
+                <img src="${iconMap['map']}" alt="地图信息">
+                <h3>地图信息</h3>
+            `;
+            
+            let content = '';
+            
+            if (mapInfo.error) {
+                content = `<p style="color: red;">错误: ${mapInfo.error}</p>`;
+            } else if (mapInfo.routes) {
+                // 路线信息
+                content = `<h4>从 ${mapInfo.origin} 到 ${mapInfo.destination}</h4>`;
+                mapInfo.routes.forEach(route => {
+                    content += `
+                        <div style="margin: 15px 0; padding: 10px; background: #f9fafb; border-radius: 8px;">
+                            <strong>${route.mode}</strong><br>
+                            距离: ${route.distance_km} 公里<br>
+                            时间: ${route.duration_min} 分钟<br>
+                            ${route.steps_summary ? `路线: ${route.steps_summary}` : ''}
+                        </div>
+                    `;
+                });
+            } else if (mapInfo.recommendations) {
+                // POI推荐信息
+                content = `<h4>${mapInfo.origin_address} 附近的 ${mapInfo.target_categories.join('、')}</h4>`;
+                mapInfo.recommendations.forEach((poi, index) => {
+                    content += `
+                        <div style="margin: 15px 0; padding: 10px; background: #f9fafb; border-radius: 8px;">
+                            <strong>${index + 1}. ${poi.name}</strong><br>
+                            地址: ${poi.address}<br>
+                            距离: ${poi.distance_m} 米<br>
+                            ${poi.telephone ? `电话: ${poi.telephone}` : ''}
+                        </div>
+                    `;
+                });
+            }
+            
+            modalBody.innerHTML = content;
+            modal.style.display = 'block';
+        }
+
+        function closeModal() {
+            modal.style.display = 'none';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        window.onclick = function(event) {
+            if (event.target == modal) {
+                closeModal();
+            }
         }
 
         function showLoading() {
@@ -336,7 +627,14 @@
                 hideLoading();
 
                 if (response.ok) {
-                    addMessage(data.response, false);
+                    // 准备资源信息
+                    const resources = {
+                        ragDocs: data.rag_docs || [],
+                        ragSources: data.rag_sources || [],
+                        mapInfo: data.map_info
+                    };
+                    
+                    addMessage(data.response, false, resources);
                 } else {
                     addMessage(`抱歉，出现了错误：${data.error}`, false);
                 }

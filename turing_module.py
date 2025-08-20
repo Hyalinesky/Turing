@@ -428,9 +428,10 @@ class TravelAssistant:
         
         return text.strip()
 
-    def retrieve_from_rag(self, query: str) -> List[str]:
-        """改进的RAG检索"""
+    def retrieve_from_rag(self, query: str) -> Tuple[List[str], List[str]]:
+        """改进的RAG检索，返回文档和对应的来源"""
         all_docs = []
+        all_sources = []  # 记录每个文档的来源
         files_to_search = []
         
         # 文件选择逻辑保持不变
@@ -452,13 +453,15 @@ class TravelAssistant:
         
         print(f"[RAG检索] 搜索文件: {files_to_search}")
         
-        # 收集所有文档
+        # 收集所有文档和对应的来源
+        file_docs_map = {}  # 存储每个文件的文档
         for file_path in files_to_search:
             try:
                 if os.path.exists(file_path):
                     with open(file_path, 'r', encoding='utf-8') as f:
                         docs = f.readlines()
                     docs = [doc.strip() for doc in docs if doc.strip()]
+                    file_docs_map[file_path] = docs
                     all_docs.extend(docs)
                 else:
                     print(f"警告: 文件 {file_path} 不存在")
@@ -467,6 +470,23 @@ class TravelAssistant:
         
         # 使用混合搜索
         retrieved_docs = self.hybrid_search(query, all_docs, top_k=4)
+        retrieved_sources = []
+        
+        # 为检索到的文档确定来源
+        for doc in retrieved_docs:
+            source_found = False
+            for file_path, file_docs in file_docs_map.items():
+                if doc in file_docs:
+                    if "xhs_rag.txt" in file_path:
+                        retrieved_sources.append("xhs")
+                    elif "酒店_rag.txt" in file_path or "美食_rag.txt" in file_path:
+                        retrieved_sources.append("dianping")
+                    else:
+                        retrieved_sources.append("other")
+                    source_found = True
+                    break
+            if not source_found:
+                retrieved_sources.append("other")
         
         # 调用Kimi API获取专家总结
         try:
@@ -481,6 +501,7 @@ class TravelAssistant:
             # 将Kimi API响应作为第一个文档插入
             if response:
                 retrieved_docs.insert(0, response)
+                retrieved_sources.insert(0, "kimi")  # 标记为kimi来源
                 print(f"[Kimi API] 获取专家总结成功")
             else:
                 print(f"[Kimi API] 响应为空")
@@ -495,6 +516,7 @@ class TravelAssistant:
                 insert_position = 1 if len(retrieved_docs) > 6 else 0
                 for i, result in enumerate(baidu_results):
                     retrieved_docs.insert(insert_position + i, result)
+                    retrieved_sources.insert(insert_position + i, "baidu")  # 标记为baidu来源
                 print(f"[百度搜索] 成功插入 {len(baidu_results)} 条搜索结果")
             else:
                 print(f"[百度搜索] 未获取到搜索结果")
@@ -505,21 +527,16 @@ class TravelAssistant:
         self.results.append({
             "step": "rag_retrieval",
             "input": {"query": query, "files_searched": files_to_search},
-            "output": retrieved_docs
+            "output": retrieved_docs,
+            "sources": retrieved_sources
         })
         
         print(f"[步骤2 - RAG检索]\n检索到 {len(retrieved_docs)} 个相关文档")
-        for i, doc in enumerate(retrieved_docs):
-            if i == 0 and len([d for d in retrieved_docs if "[Kimi专家总结]" in str(d)]) > 0:
-                doc_type = "[Kimi专家总结]"
-            elif any("标题：" in doc and "内容：" in doc for result in baidu_results if result == doc):
-                doc_type = "[百度搜索]"
-            else:
-                doc_type = "[文档检索]"
-            print(f"{i+1}. {doc_type} {doc[:100]}...")
+        for i, (doc, source) in enumerate(zip(retrieved_docs, retrieved_sources)):
+            print(f"{i+1}. [{source}] {doc[:100]}...")
         print()
         
-        return retrieved_docs
+        return retrieved_docs, retrieved_sources
     
     def classify_map_task(self, query: str) -> str:
         """判断地图任务类型"""
@@ -684,6 +701,64 @@ class TravelAssistant:
             "recommendations": final_recommendations
         }
     
+    def format_duration(self, seconds):
+        """将秒转换为更友好的格式"""
+        if seconds is None:
+            return None
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        
+        if h > 0:
+            return f"{h}小时{m}分钟"
+        else:
+            return f"{m}分钟"
+
+    def extract_instructions(self, steps, mode=None):
+        """递归提取所有instruction"""
+        instructions = []
+        if not steps:
+            return instructions
+
+        for step in steps:
+            if isinstance(step, dict):
+                instr = step.get("instruction", "")
+                if mode == "riding" and "turn_type" in step and step["turn_type"]:
+                    instr += f" ({step['turn_type']})"
+                if instr:
+                    instructions.append(instr)
+                # 公交可能有子步骤
+                for key in ["steps", "lines"]:
+                    if key in step and isinstance(step[key], list):
+                        instructions.extend(self.extract_instructions(step[key], mode))
+            elif isinstance(step, list):
+                instructions.extend(self.extract_instructions(step, mode))
+        return instructions
+
+    def parse_route(self, data, mode=None):
+        """解析路线信息，提取总距离、预计耗时和完整路线"""
+        if not isinstance(data, dict) or data.get("status") != 0:
+            return None, None, None
+        try:
+            route = data["result"]["routes"][0]
+            distance_m = route.get("distance")  # 米
+            duration_s = route.get("duration")  # 秒
+            steps = route.get("steps", [])
+            instructions = self.extract_instructions(steps, mode)
+            
+            # 合并指令
+            full_route = "\n".join(instructions)
+            
+            # 如果最后没有"到达终点"，手动追加
+            if full_route and "到达终点" not in full_route and "到达目的地" not in full_route:
+                full_route += "\n到达终点"
+
+            distance_km = round(distance_m / 1000, 2) if distance_m is not None else None
+            duration_fmt = self.format_duration(duration_s)
+
+            return distance_km, duration_fmt, full_route
+        except (KeyError, IndexError, TypeError):
+            return None, None, None
+
     def get_route_recommendations(self, query: str) -> Dict:
         """获取路线推荐"""
         # 使用LLM提取起始地点和目标地点
@@ -710,15 +785,15 @@ class TravelAssistant:
         if origin == "-1" or destination == "-1":
             return {"error": "您好！请说明您的起始地点和目标地点"}
         
-        # 如果是当前位置，使用默认位置（这里假设为百度科技园）
+        # 如果是当前位置，使用默认位置
         if origin in ["当前位置", "我的位置", "这里"]:
             return {"error": "您好！请说明您的起始地点和目标地点"}
         
         # 获取坐标
-        origin = "北京" + origin
-        destination =  "北京" + destination
-        origin_coords = self.geocode_address(origin)
-        dest_coords = self.geocode_address(destination)
+        origin_address = "北京" + origin
+        destination_address = "北京" + destination
+        origin_coords = self.geocode_address(origin_address)
+        dest_coords = self.geocode_address(destination_address)
         
         if "error" in origin_coords or "error" in dest_coords:
             return {"error": "地理编码失败"}
@@ -738,26 +813,19 @@ class TravelAssistant:
             
             try:
                 resp = requests.get(base_url, params=params)
+                resp.raise_for_status()
                 data = resp.json()
                 
-                if data.get("status") == 0:
-                    route = data["result"]["routes"][0]
-                    distance_m = route.get("distance", 0)
-                    duration_s = route.get("duration", 0)
-                    
-                    # 保留完整的路线描述
-                    steps = route.get("steps", [])
-                    all_steps = []
-                    for step in steps:
-                        if isinstance(step, dict) and "instruction" in step:
-                            all_steps.append(step["instruction"])
-                    
+                # 使用新的解析方法
+                distance_km, duration_fmt, full_route = self.parse_route(data, mode)
+                
+                if distance_km is not None:
                     route_info = {
                         "mode": mode_names[mode],
-                        "distance_km": round(distance_m / 1000, 2),
-                        "duration_min": round(duration_s / 60, 1),
-                        "steps": all_steps,  # 保留完整步骤
-                        "steps_summary": " → ".join(all_steps[:3]) + ("..." if len(all_steps) > 3 else "") if all_steps else "直达"  # 添加摘要用于显示
+                        "distance_km": distance_km,
+                        "duration": duration_fmt,  # 使用格式化后的时间
+                        "full_route": full_route,  # 完整路线
+                        "steps_summary": self._create_route_summary(full_route)  # 创建摘要
                     }
                     routes.append(route_info)
                     
@@ -767,10 +835,28 @@ class TravelAssistant:
             time.sleep(0.1)
         
         return {
-            "origin": origin,
-            "destination": destination,
+            "origin": origin_address,
+            "destination": destination_address,
+            "origin_location": origin_coords,
+            "dest_location": dest_coords,
             "routes": routes
         }
+
+    def _create_route_summary(self, full_route: str) -> str:
+        """创建路线摘要"""
+        if not full_route:
+            return "直达"
+        
+        # 分割成步骤
+        steps = full_route.split('\n')
+        steps = [s.strip() for s in steps if s.strip()]
+        
+        if len(steps) <= 3:
+            return ' → '.join(steps)
+        else:
+            # 取前两步和最后一步
+            summary_steps = steps[:2] + ['...'] + [steps[-1]]
+            return ' → '.join(summary_steps)
     
     def handle_map_query(self, query: str) -> Dict:
         """处理地图相关查询"""
@@ -837,8 +923,8 @@ class TravelAssistant:
         
         return response
     
-    def process_query(self, query: str) -> str:
-        """处理用户查询的主函数"""
+    def process_query(self, query: str) -> dict:
+        """处理用户查询的主函数 - 返回包含所有信息的字典"""
         print(f"\n{'='*50}")
         print(f"处理查询: {query}")
         print(f"模型模式: {'API测试模式' if self.use_test_mode else '本地模型模式'}")
@@ -848,11 +934,12 @@ class TravelAssistant:
         use_rag, use_map = self.classify_query(query)
         
         rag_docs = None
+        rag_sources = None
         map_info = None
         
         # 步骤2：根据分类执行相应操作
         if use_rag:
-            rag_docs = self.retrieve_from_rag(query)
+            rag_docs, rag_sources = self.retrieve_from_rag(query)
         
         if use_map:
             map_info = self.handle_map_query(query)
@@ -860,10 +947,13 @@ class TravelAssistant:
         # 步骤3：生成最终响应
         final_response = self.generate_final_response(query, rag_docs, map_info)
         
-        # 保存结果
-        # self.save_results()
-        
-        return final_response
+        # 返回包含所有信息的字典
+        return {
+            "response": final_response,
+            "rag_docs": rag_docs if rag_docs else [],
+            "rag_sources": rag_sources if rag_sources else [],
+            "map_info": map_info
+        }
     
     def save_results(self):
         """保存所有步骤的结果"""
@@ -880,23 +970,13 @@ def process_single_query(
     api_model: str = "gpt-4.1-2025-04-14",
     api_base_url: str = "https://api.wlai.vip/v1/",
     local_model_path: str = "/root/paddlejob/workspace/env_run/chuxu/LLaMA-Factory/output/qwen2_5_lora_sft"
-) -> str:
+) -> dict:
     """
-    Process a single query and return the response.
+    Process a single query and return the response with all information.
     
-    Args:
-        query: The user's query
-        use_test_mode: Whether to use API (True) or local model (False)
-        api_key: API key for the service
-        api_model: Model name for API
-        api_base_url: Base URL for API
-        local_model_path: Path to local model
-        
     Returns:
-        Response text from the model
+        Dictionary containing response, rag_docs, rag_sources, and map_info
     """
-    # Set CUDA device
-    os.environ['CUDA_VISIBLE_DEVICES'] = '7'
     
     # Initialize assistant
     assistant = TravelAssistant(
@@ -907,13 +987,13 @@ def process_single_query(
         api_base_url=api_base_url
     )
     
-    # Process query
-    response = assistant.process_query(query)
+    # Process query - now returns a dictionary
+    result = assistant.process_query(query)
     
     # Clear results for next query
     assistant.results = []
     
-    return response
+    return result
 
 # 主函数
 def main():  

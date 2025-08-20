@@ -23,11 +23,8 @@ def handle_query():
         if not query:
             return jsonify({'error': '请输入查询内容'}), 400
         
-        # Set CUDA device environment variable
-        os.environ['CUDA_VISIBLE_DEVICES'] = '7'
-        
-        # Process the query
-        response = process_single_query(
+        # Process the query - now returns a dictionary with all information
+        result = process_single_query(
             query=query,
             use_test_mode=False,
             api_key="sk-8uZDRBjjuuwpdArZWdCpo7EP2iKhXBHBnvS5x2ajUbWr8u6t",
@@ -36,10 +33,10 @@ def handle_query():
             local_model_path="/root/paddlejob/workspace/env_run/chuxu/LLaMA-Factory/output/qwen2_5_lora_sft"
         )
         
-        return jsonify({'response': response})
+        return jsonify(result)
         
     except Exception as e:
-        print(f"Error: {str(e)}")  # 打印错误信息
+        print(f"Error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
