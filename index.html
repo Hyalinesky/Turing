@@ -621,26 +621,162 @@
                     body: JSON.stringify({ query: query }),
                 });
 
-                const data = await response.json();
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '服务器错误');
+                }
 
-                // Hide loading
+                // 创建新的消息容器用于流式显示
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message bot-message';
+                messageDiv.id = 'streamingMessage';
+                
+                const bubbleDiv = document.createElement('div');
+                bubbleDiv.className = 'bubble';
+                bubbleDiv.id = 'streamingBubble';
+                
+                messageDiv.appendChild(bubbleDiv);
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+
+                // 隐藏加载动画
                 hideLoading();
 
-                if (response.ok) {
-                    // 准备资源信息
-                    const resources = {
-                        ragDocs: data.rag_docs || [],
-                        ragSources: data.rag_sources || [],
-                        mapInfo: data.map_info
-                    };
+                // 处理流式响应 - 实时处理每个字符
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let resources = {
+                    ragDocs: [],
+                    ragSources: [],
+                    mapInfo: null
+                };
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
                     
-                    addMessage(data.response, false, resources);
-                } else {
-                    addMessage(`抱歉，出现了错误：${data.error}`, false);
+                    // 保留最后一行（可能不完整）
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.trim()) {
+                            try {
+                                const data = JSON.parse(line);
+                                
+                                switch (data.type) {
+                                    case 'status':
+                                        // 处理状态更新
+                                        console.log('状态更新:', data.content);
+                                        if (data.content === 'rag_retrieval_start') {
+                                            document.getElementById('streamingBubble').innerHTML += '<br>正在检索相关文档...';
+                                        } else if (data.content === 'map_processing_start') {
+                                            document.getElementById('streamingBubble').innerHTML += '<br>正在处理地图信息...';
+                                        } else if (data.content === 'response_generation_start') {
+                                            document.getElementById('streamingBubble').innerHTML += '<br>正在生成回答...<br>';
+                                        }
+                                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                                        break;
+                                    
+                                    case 'token':
+                                        // 实时添加字符到页面
+                                        const streamingBubbleElement = document.getElementById('streamingBubble');
+                                        if (streamingBubbleElement) {
+                                            streamingBubbleElement.innerHTML += data.content;
+                                            chatContainer.scrollTop = chatContainer.scrollHeight;
+                                        }
+                                        break;
+                                    
+                                    case 'rag_info':
+                                        // 处理RAG信息
+                                        if (data.content === 'rag_retrieved') {
+                                            resources.ragDocs = Array(data.doc_count).fill('基于相关文档信息');
+                                            resources.ragSources = Array(data.doc_count).fill('kimi');
+                                            document.getElementById('streamingBubble').innerHTML += `<br>已检索到 ${data.doc_count} 个相关文档`;
+                                            chatContainer.scrollTop = chatContainer.scrollHeight;
+                                        }
+                                        break;
+                                    
+                                    case 'map_info':
+                                        // 处理地图信息
+                                        if (data.content === 'map_processed') {
+                                            resources.mapInfo = { hasMap: true };
+                                            document.getElementById('streamingBubble').innerHTML += '<br>已处理地图信息';
+                                            chatContainer.scrollTop = chatContainer.scrollHeight;
+                                        }
+                                        break;
+                                    
+                                    case 'end':
+                                        // 流式传输完成
+                                        const streamingMessage = document.getElementById('streamingMessage');
+                                        const streamingBubble = document.getElementById('streamingBubble');
+                                        
+                                        if (streamingMessage && streamingBubble) {
+                                            streamingMessage.id = '';
+                                            streamingBubble.id = '';
+                                            
+                                            // 更新资源信息
+                                            if (data.rag_docs && data.rag_docs.length > 0) {
+                                                resources.ragDocs = data.rag_docs;
+                                                resources.ragSources = data.rag_sources || Array(data.rag_docs.length).fill('kimi');
+                                            }
+                                            if (data.map_info) {
+                                                resources.mapInfo = data.map_info;
+                                            }
+                                            
+                                            // 如果有资源信息，添加资源图标
+                                            if (resources.ragDocs.length > 0 || resources.mapInfo) {
+                                                const resourceContainer = document.createElement('div');
+                                                resourceContainer.className = 'resource-icons';
+                                                
+                                                // 添加RAG文档图标
+                                                if (resources.ragDocs.length > 0) {
+                                                    resources.ragDocs.forEach((doc, index) => {
+                                                        const source = resources.ragSources[index] || 'kimi';
+                                                        const icon = createResourceIcon(doc, source, index);
+                                                        resourceContainer.appendChild(icon);
+                                                    });
+                                                }
+                                                
+                                                // 添加地图信息图标
+                                                if (resources.mapInfo) {
+                                                    const mapIcon = createMapIcon(resources.mapInfo);
+                                                    resourceContainer.appendChild(mapIcon);
+                                                }
+                                                
+                                                streamingMessage.insertBefore(resourceContainer, streamingBubble);
+                                            }
+                                        }
+                                        break;
+                                }
+                            } catch (e) {
+                                console.error('解析流式数据错误:', e, '原始数据:', line);
+                            }
+                        }
+                    }
                 }
+
+                                        // 处理缓冲区中剩余的数据
+                                        if (buffer.trim()) {
+                                            try {
+                                                const data = JSON.parse(buffer);
+                                                if (data.type === 'token') {
+                                                    const streamingBubbleElement = document.getElementById('streamingBubble');
+                                                    if (streamingBubbleElement) {
+                                                        streamingBubbleElement.innerHTML += data.content;
+                                                    }
+                                                }
+                                            } catch (e) {
+                                                console.error('解析缓冲区数据错误:', e);
+                                            }
+                                        }
+
             } catch (error) {
                 hideLoading();
-                addMessage(`抱歉，网络连接出现问题：${error.message}`, false);
+                addMessage(`抱歉，出现了错误：${error.message}`, false);
             } finally {
                 // Re-enable input and button
                 sendBtn.disabled = false;
